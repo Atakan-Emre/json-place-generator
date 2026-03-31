@@ -33,7 +33,37 @@
         </div>
       </header>
 
-      <main class="main-grid">
+      <div class="workspace-toolbar">
+        <button type="button" class="btn btn--toolbar" id="layout-reset">Düzeni sıfırla</button>
+        <span class="workspace-toolbar__hint"
+          ><strong>⋮⋮</strong> Sürükleyerek panel sırası · <strong>│</strong> Ara çizgiden genişlik ·
+          <strong>▼</strong> Daralt / genişlet</span
+        >
+      </div>
+
+      <main class="workspace-panels" id="workspace-panels">
+        <div class="workspace-col" data-panel-id="input">
+          <div class="workspace-col__chrome">
+            <button
+              type="button"
+              class="workspace-col__drag"
+              draggable="true"
+              aria-label="Paneli sürükleyerek taşı"
+              title="Sürükle — sıra"
+            >
+              ⋮⋮
+            </button>
+            <button
+              type="button"
+              class="workspace-col__collapse"
+              aria-expanded="true"
+              aria-controls="panel-body-input"
+              title="Daralt"
+            >
+              ▼
+            </button>
+          </div>
+          <div class="workspace-col__body" id="panel-body-input">
         <section class="panel panel--input" aria-labelledby="in-title">
           <h2 id="in-title">Girdi</h2>
           <div class="field">
@@ -68,8 +98,40 @@
               Aynı değeri tek değişkende birleştir
             </label>
           </div>
+          <div class="field curl-meta-field" id="curl-meta-block" hidden>
+            <label class="checkbox">
+              <input type="checkbox" id="chk-curl-meta" />
+              cURL komutunda URL ve header için placeholder kullan
+            </label>
+          </div>
         </section>
+          </div>
+        </div>
 
+        <div class="panel-resizer" role="separator" aria-orientation="vertical" aria-label="Panel genişliği"></div>
+
+        <div class="workspace-col" data-panel-id="vars">
+          <div class="workspace-col__chrome">
+            <button
+              type="button"
+              class="workspace-col__drag"
+              draggable="true"
+              aria-label="Paneli sürükleyerek taşı"
+              title="Sürükle — sıra"
+            >
+              ⋮⋮
+            </button>
+            <button
+              type="button"
+              class="workspace-col__collapse"
+              aria-expanded="true"
+              aria-controls="panel-body-vars"
+              title="Daralt"
+            >
+              ▼
+            </button>
+          </div>
+          <div class="workspace-col__body" id="panel-body-vars">
         <section class="panel panel--vars" aria-labelledby="var-title">
           <div class="panel-head">
             <h2 id="var-title">Tespit edilen <code>id</code> alanları</h2>
@@ -92,15 +154,65 @@
               </tbody>
             </table>
           </div>
+          <div class="curl-vars-wrap" id="curl-vars-section" hidden>
+            <div class="panel-subhead">
+              <h2 class="sub-title" id="curl-var-title">cURL — URL &amp; header</h2>
+              <span id="curl-var-count" class="badge">0</span>
+            </div>
+            <div class="table-wrap">
+              <table class="var-table" id="curl-var-table">
+                <thead>
+                  <tr>
+                    <th class="col-on">Açık</th>
+                    <th>Alan</th>
+                    <th>Değer</th>
+                    <th>Değişken</th>
+                  </tr>
+                </thead>
+                <tbody id="curl-var-tbody">
+                  <tr class="placeholder-row">
+                    <td colspan="4">cURL parse sonrası satırlar.</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
           <div class="row-actions row-actions--wrap">
             <button type="button" class="btn" id="btn-refresh" disabled>Yeniden üret</button>
           </div>
         </section>
+          </div>
+        </div>
 
+        <div class="panel-resizer" role="separator" aria-orientation="vertical" aria-label="Panel genişliği"></div>
+
+        <div class="workspace-col" data-panel-id="out">
+          <div class="workspace-col__chrome">
+            <button
+              type="button"
+              class="workspace-col__drag"
+              draggable="true"
+              aria-label="Paneli sürükleyerek taşı"
+              title="Sürükle — sıra"
+            >
+              ⋮⋮
+            </button>
+            <button
+              type="button"
+              class="workspace-col__collapse"
+              aria-expanded="true"
+              aria-controls="panel-body-out"
+              title="Daralt"
+            >
+              ▼
+            </button>
+          </div>
+          <div class="workspace-col__body" id="panel-body-out">
         <section class="panel panel--out" aria-labelledby="out-title">
           <h2 id="out-title">Çıktı</h2>
           <div class="tabs" role="tablist">
             <button type="button" class="tab active" role="tab" aria-selected="true" data-tab="json">Değişkenli JSON</button>
+            <button type="button" class="tab" role="tab" aria-selected="false" data-tab="curl">cURL</button>
             <button type="button" class="tab" role="tab" aria-selected="false" data-tab="env">Env JSON</button>
             <button type="button" class="tab" role="tab" aria-selected="false" data-tab="script">Postman / Apidog</button>
             <button type="button" class="tab" role="tab" aria-selected="false" data-tab="dotenv">.env satırları</button>
@@ -110,6 +222,9 @@
           <div class="tab-panels">
             <div class="tab-panel active" id="panel-json" role="tabpanel">
               <pre class="code-out" id="out-json"></pre>
+            </div>
+            <div class="tab-panel" id="panel-curl" role="tabpanel" hidden>
+              <pre class="code-out" id="out-curl"></pre>
             </div>
             <div class="tab-panel" id="panel-env" role="tabpanel" hidden>
               <pre class="code-out" id="out-env"></pre>
@@ -132,6 +247,8 @@
             <button type="button" class="btn" id="btn-dl-out">İndir</button>
           </div>
         </section>
+          </div>
+        </div>
       </main>
 
       <footer class="footer">

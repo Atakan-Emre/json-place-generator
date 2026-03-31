@@ -11,6 +11,7 @@ API ve test payload’larındaki `id` alanlarını placeholder + ortam değişke
 - Placeholder: `{{var}}`, `[[var]]`, `${var}` — değişkenli JSON ve **Place** sekmesi bu seçime uyar
 - Env JSON, Postman/Apidog, `.env` satırları, CSV, `place-list.txt`
 - **Gündüz / gece teması** (`localStorage`: `jpg-theme` = `light` | `dark`)
+- **Çalışma alanı:** üç sütun (girdi, tespit, çıktı); sürükleyerek sıra, ara çizgilerden genişlik, daraltma. Varsayılan genişlikler çıktı sütununu öne alır (uzun `Authorization` / token satırları daha az dikey taşar). Yerleşim `localStorage` anahtarı `jpg-workspace` ile saklanır; **Düzeni sıfırla** varsayılan oranlara döner.
 
 ## GitHub Pages — iki geçerli yöntem
 

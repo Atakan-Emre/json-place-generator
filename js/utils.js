@@ -11,9 +11,47 @@ export function toCamelCase(str) {
 }
 
 /**
- * JSON path segmentlerinden camelCase değişken kökü (örn. invoice + address → invoiceAddress)
- * @param {string[]} segments
+ * Her türlü header adından değişken üretir (X-Tenant, Custom_Header, IMS-Org vb.)
+ * @param {string} key
  */
+export function httpHeaderKeyToVarName(key) {
+  const raw = key.trim();
+  if (!raw) return "httpHeader";
+  let parts = raw
+    .split("-")
+    .map((p) => p.replace(/[^a-zA-Z0-9]/g, ""))
+    .filter(Boolean);
+  if (parts.length === 0) {
+    parts = raw.split(/[^a-zA-Z0-9]+/).filter(Boolean);
+  }
+  if (parts.length === 0) return "httpHeader";
+  const slug = parts
+    .map((p) => p.charAt(0).toUpperCase() + p.slice(1).toLowerCase())
+    .join("");
+  return slug.charAt(0).toLowerCase() + slug.slice(1);
+}
+
+/**
+ * Tam URL path'inden (son anlamlı segmentler) önerilen env adı: örn. .../purchase/header → purchaseHeaderUrl
+ * @param {string} url
+ */
+export function suggestUrlEnvName(url) {
+  try {
+    const u = new URL(url);
+    let segs = u.pathname.split("/").filter(Boolean);
+    const noise = /^(v\d+(\.\d+)*|api)$/i;
+    segs = segs.filter((s) => !noise.test(s));
+    const tail = segs.slice(-4);
+    if (!tail.length) {
+      return "requestUrl";
+    }
+    const base = toCamelCase(tail.join(" "));
+    return base ? `${base}Url` : "requestUrl";
+  } catch {
+    return "requestUrl";
+  }
+}
+
 export function segmentsToCamelVariable(segments) {
   if (!segments.length) return "";
   let acc = "";

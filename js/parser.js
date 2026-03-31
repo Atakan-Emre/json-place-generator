@@ -1,13 +1,26 @@
 /** @typedef {'auto' | 'curl' | 'json'} InputType */
 
+/** @typedef {{ method: string, url: string, headers: { key: string, value: string }[], hasLocation: boolean }} CurlMeta */
+
+/** @typedef {{ preBody: string, jsonString: string }} CurlSplitResult */
+
 /** @param {string} text */
 export function detectInputType(text) {
   const t = text.trimStart();
-  const lower = t.slice(0, 500).toLowerCase();
+  const lower = t.slice(0, 1200).toLowerCase();
   if (
     lower.startsWith("curl ") ||
+    /^[\s\S]{0,400}\bcurl\s+/i.test(t) ||
     /\s--data(-raw|-binary)?\s/.test(lower) ||
-    /\s-d\s/.test(lower)
+    /(^|[\s])-d\s+/.test(lower)
+  ) {
+    return "curl";
+  }
+  // Yapısal: URL + header + JSON gövde (bazen "curl" kelimesi olmadan export)
+  if (
+    /\bhttps?:\/\/[^\s'"`]+/i.test(t) &&
+    /--header\b|\s-H\s+/i.test(t) &&
+    /\{[\s\S]*\}/.test(t)
   ) {
     return "curl";
   }
@@ -18,53 +31,49 @@ export function detectInputType(text) {
 }
 
 /**
- * cURL içinden JSON body çıkarır; --data-raw, --data, --data-binary, -d
- * @param {string} curlText
+ * tırnak dışında kalan ilk JSON kökü { veya [ — gövde flag'i yokken yapısal ayrım
+ * @param {string} text
  */
-export function extractJsonFromCurl(curlText) {
-  const text = curlText.replace(/\r\n/g, "\n");
-  const patterns = [
-    /--data-raw\s+/gi,
-    /--data-binary\s+/gi,
-    /--data\s+/gi,
-    /\s-d\s+/gi,
-  ];
-
-  let start = -1;
-  let usedPatternEnd = 0;
-  for (const re of patterns) {
-    re.lastIndex = 0;
-    const m = re.exec(text);
-    if (m && (start < 0 || m.index < start)) {
-      start = m.index + m[0].length;
-      usedPatternEnd = start;
+function findFirstStructuralJsonIndex(text) {
+  let i = 0;
+  let inSQ = false;
+  let inDQ = false;
+  while (i < text.length) {
+    const c = text[i];
+    if (inSQ) {
+      if (c === "\\" && i + 1 < text.length) {
+        i += 2;
+        continue;
+      }
+      if (c === "'") inSQ = false;
+      i++;
+      continue;
     }
-  }
-
-  if (start < 0) {
-    const m = text.match(/\s-d\s*'([^']*)'|\s-d\s*"([^"]*)"/i);
-    if (m) {
-      return (m[1] ?? m[2] ?? "").trim();
+    if (inDQ) {
+      if (c === "\\" && i + 1 < text.length) {
+        i += 2;
+        continue;
+      }
+      if (c === '"') inDQ = false;
+      i++;
+      continue;
     }
-    throw new Error("cURL içinde --data-raw, --data veya -d bulunamadı.");
+    if (c === "'") {
+      inSQ = true;
+      i++;
+      continue;
+    }
+    if (c === '"') {
+      inDQ = true;
+      i++;
+      continue;
+    }
+    if (c === "{" || c === "[") {
+      return i;
+    }
+    i++;
   }
-
-  const after = text.slice(start).trimStart();
-  if (!after.length) {
-    throw new Error("cURL veri gövdesi boş.");
-  }
-
-  const q = after[0];
-  if (q === "'" || q === '"') {
-    return extractQuotedString(after, q);
-  }
-
-  const brace = after.search(/[\[{]/);
-  if (brace >= 0) {
-    return extractBalancedJson(after.slice(brace));
-  }
-
-  throw new Error("JSON gövdesi ayırt edilemedi (tırnak veya {/[ bekleniyor).");
+  return -1;
 }
 
 /** @param {string} s @param {"'" | '"'} quote */
@@ -130,6 +139,99 @@ function extractBalancedJson(s) {
 
 /**
  * @param {string} text
+ * @returns {{ preBody: string, jsonString: string } | null}
+ */
+function tryExtractJsonAfterDataFlag(text) {
+  const patterns = [
+    /--data-raw\s+/gi,
+    /--data-binary\s+/gi,
+    /--data\s+/gi,
+    /\s-d\s+/gi,
+  ];
+
+  let flagIndex = -1;
+  let payloadStart = -1;
+
+  for (const re of patterns) {
+    re.lastIndex = 0;
+    const m = re.exec(text);
+    if (m && (flagIndex < 0 || m.index < flagIndex)) {
+      flagIndex = m.index;
+      payloadStart = m.index + m[0].length;
+    }
+  }
+
+  if (payloadStart < 0) {
+    const m = text.match(/\s-d\s*'([^']*)'|\s-d\s*"([^"]*)"/i);
+    if (m) {
+      const idx = /** @type {RegExpMatchArray} */ (m).index ?? -1;
+      if (idx >= 0) {
+        return {
+          preBody: text.slice(0, idx).trimEnd(),
+          jsonString: (m[1] ?? m[2] ?? "").trim(),
+        };
+      }
+    }
+    return null;
+  }
+
+  const after = text.slice(payloadStart).trimStart();
+  if (!after.length) return null;
+
+  const q = after[0];
+  let jsonStr;
+  if (q === "'" || q === '"') {
+    jsonStr = extractQuotedString(after, q);
+  } else {
+    const brace = after.search(/[\[{]/);
+    if (brace < 0) return null;
+    jsonStr = extractBalancedJson(after.slice(brace));
+  }
+
+  return { preBody: text.slice(0, flagIndex).trimEnd(), jsonString: jsonStr };
+}
+
+/**
+ * cURL yapısı (method, URL, header'lar) ile JSON gövdesini ayırır.
+ * Önce --data-raw / --data / -d; yoksa tırnak dışı ilk { veya [ ile gövde bulunur.
+ * @param {string} curlText
+ * @returns {CurlSplitResult}
+ */
+export function splitCurlStructuralAndBody(curlText) {
+  const text = curlText.replace(/\r\n/g, "\n");
+
+  const flagged = tryExtractJsonAfterDataFlag(text);
+  if (flagged && flagged.jsonString.length > 0) {
+    return flagged;
+  }
+
+  const j = findFirstStructuralJsonIndex(text);
+  if (j < 0) {
+    throw new Error(
+      "JSON gövdesi bulunamadı: --data-raw / -d yoksa gövde { veya [ ile başlamalı (tırnak dışında)."
+    );
+  }
+
+  const jsonString = extractBalancedJson(text.slice(j));
+  const preBody = text.slice(0, j).trimEnd();
+
+  if (!jsonString || (!jsonString.startsWith("{") && !jsonString.startsWith("["))) {
+    throw new Error("Geçerli JSON gövdesi çıkarılamadı.");
+  }
+
+  return { preBody, jsonString };
+}
+
+/**
+ * cURL içinden yalnızca JSON string (split ile uyumlu)
+ * @param {string} curlText
+ */
+export function extractJsonFromCurl(curlText) {
+  return splitCurlStructuralAndBody(curlText).jsonString;
+}
+
+/**
+ * @param {string} text
  * @param {InputType} [forcedType]
  */
 export function parseInput(text, forcedType = "auto") {
@@ -138,12 +240,11 @@ export function parseInput(text, forcedType = "auto") {
     throw new Error("Girdi boş.");
   }
 
-  const type =
-    forcedType === "auto" ? detectInputType(trimmed) : forcedType;
+  const type = forcedType === "auto" ? detectInputType(trimmed) : forcedType;
 
   let jsonStr = trimmed;
   if (type === "curl") {
-    jsonStr = extractJsonFromCurl(trimmed);
+    jsonStr = splitCurlStructuralAndBody(trimmed).jsonString;
   }
 
   try {
@@ -152,4 +253,39 @@ export function parseInput(text, forcedType = "auto") {
     const msg = e instanceof Error ? e.message : String(e);
     throw new Error(`JSON parse hatası: ${msg}`);
   }
+}
+
+/**
+ * cURL meta: yalnızca gövdeden önceki yapı; header/URL isimleri tamamen girdiden gelir.
+ * @param {string} curlText
+ */
+export function parseCurlMetadata(curlText) {
+  const { preBody } = splitCurlStructuralAndBody(curlText);
+  const text = preBody.replace(/\r\n/g, "\n");
+  const hasLocation = /--location\b/i.test(text);
+
+  let method = "GET";
+  const mReq = text.match(/(?:^|\s)--request\s+(\w+)|(?:^|\s)-X\s+(\w+)/i);
+  if (mReq) method = (mReq[1] || mReq[2] || "GET").toUpperCase();
+
+  let url = "";
+  const urlMatch = text.match(/['"](https?:\/\/[^'"]+)['"]/);
+  if (urlMatch) url = urlMatch[1];
+
+  /** @type {{ key: string, value: string }[]} */
+  const headers = [];
+
+  const hdrRe = /--header\s+(['"])([\s\S]*?)\1|--?H\s+(['"])([\s\S]*?)\3/gi;
+  let hm;
+  while ((hm = hdrRe.exec(text)) !== null) {
+    const line = (hm[2] ?? hm[4] ?? "").trim().replace(/\n/g, " ");
+    const idx = line.indexOf(":");
+    if (idx < 0) continue;
+    const key = line.slice(0, idx).trim();
+    const value = line.slice(idx + 1).trim();
+    if (!key) continue;
+    headers.push({ key, value });
+  }
+
+  return { method, url, headers, hasLocation };
 }

@@ -1,4 +1,4 @@
-import { parseInput } from "./parser.js";
+import { parseInput, parseCurlMetadata, detectInputType } from "./parser.js";
 import {
   findIdFields,
   buildDetectedFields,
@@ -7,10 +7,14 @@ import {
   buildEnvObject,
   applyPrefixToName,
   formatVariablePlaceholder,
+  assignUniqueNames,
 } from "./transformer.js";
-import { copyText, downloadFile } from "./utils.js";
+import { copyText, downloadFile, httpHeaderKeyToVarName, suggestUrlEnvName } from "./utils.js";
+import { initWorkspaceLayout } from "./layout.js";
 
 /** @typedef {{ path: string, value: string, variableName: string, enabled: boolean }} DetectedFieldRow */
+
+/** @typedef {{ kind: 'url' | 'header', path: string, value: string, variableName: string, enabled: boolean, headerKey: string }} CurlMetaRow */
 
 const el = {
   rawInput: /** @type {HTMLTextAreaElement} */ (document.getElementById("raw-input")),
@@ -21,11 +25,17 @@ const el = {
   placeholderFmt: /** @type {HTMLSelectElement} */ (document.getElementById("placeholder-fmt")),
   varPrefix: /** @type {HTMLInputElement} */ (document.getElementById("var-prefix")),
   chkMerge: /** @type {HTMLInputElement} */ (document.getElementById("chk-merge-values")),
+  chkCurlMeta: /** @type {HTMLInputElement | null} */ (document.getElementById("chk-curl-meta")),
+  curlMetaBlock: document.getElementById("curl-meta-block"),
+  curlVarsSection: document.getElementById("curl-vars-section"),
+  curlVarTbody: /** @type {HTMLTableSectionElement | null} */ (document.getElementById("curl-var-tbody")),
+  curlVarCount: document.getElementById("curl-var-count"),
   varTbody: /** @type {HTMLTableSectionElement} */ (document.getElementById("var-tbody")),
   varCount: document.getElementById("var-count"),
   tabs: document.querySelectorAll(".tab"),
   panels: document.querySelectorAll(".tab-panel"),
   outJson: document.getElementById("out-json"),
+  outCurl: document.getElementById("out-curl"),
   outEnv: document.getElementById("out-env"),
   outScript: document.getElementById("out-script"),
   outDotenv: document.getElementById("out-dotenv"),
@@ -43,10 +53,12 @@ const ICON_SUN = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fi
 
 const ICON_MOON = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>`;
 
-/** @type {{ parsedJson: unknown | null, rows: DetectedFieldRow[] }} */
+/** @type {{ parsedJson: unknown | null, rows: DetectedFieldRow[], curlMeta: { method: string, url: string, headers: { key: string, value: string }[], hasLocation: boolean } | null, curlRows: CurlMetaRow[] }} */
 const state = {
   parsedJson: null,
   rows: [],
+  curlMeta: null,
+  curlRows: [],
 };
 
 let activeTab = "json";
@@ -71,6 +83,144 @@ function getPlaceholderFormat() {
 
 function getPrefix() {
   return el.varPrefix.value.trim();
+}
+
+/**
+ * @param {NonNullable<typeof state.curlMeta>} meta
+ * @returns {CurlMetaRow[]}
+ */
+function buildCurlMetaRows(meta) {
+  if (!meta.url && meta.headers.length === 0) return [];
+  /** @type {{ kind: 'url' | 'header', path: string, headerKey: string, value: string }[]} */
+  const items = [];
+  if (meta.url) {
+    items.push({ kind: "url", path: "curl.url", headerKey: "", value: meta.url });
+  }
+  for (const h of meta.headers) {
+    items.push({
+      kind: "header",
+      path: `curl.header.${h.key}`,
+      headerKey: h.key,
+      value: h.value,
+    });
+  }
+  const names = items.map((it) =>
+    it.kind === "url" ? suggestUrlEnvName(meta.url) : httpHeaderKeyToVarName(it.headerKey)
+  );
+  const unique = assignUniqueNames(names);
+  return items.map((it, i) => ({
+    kind: it.kind,
+    path: it.path,
+    value: it.value,
+    variableName: unique[i],
+    enabled: true,
+    headerKey: it.headerKey,
+  }));
+}
+
+/** @param {string} s */
+function shellSingleQuote(s) {
+  return `'${s.replace(/'/g, `'\\''`)}'`;
+}
+
+/**
+ * @param {CurlMetaRow | undefined} row
+ * @param {string} literal
+ */
+function displayCurlField(row, literal, fmt, prefix) {
+  if (!el.chkCurlMeta?.checked || !row?.enabled) return literal;
+  return formatVariablePlaceholder(row.variableName, fmt, prefix);
+}
+
+function buildCurlCommand() {
+  const meta = state.curlMeta;
+  if (!meta || state.parsedJson == null) return "";
+  const fmt = getPlaceholderFormat();
+  const prefix = getPrefix();
+  const rows = postMergeRows();
+  const bodyObj = replaceIdsWithVariables(state.parsedJson, rows, fmt, prefix);
+  const bodyStr = JSON.stringify(bodyObj, null, 2);
+
+  const urlRow = state.curlRows.find((r) => r.kind === "url");
+  const urlDisp = urlRow
+    ? displayCurlField(urlRow, meta.url, fmt, prefix)
+    : meta.url;
+
+  const startParts = [];
+  if (meta.hasLocation) startParts.push("curl --location");
+  else startParts.push("curl");
+  startParts.push(`--request ${meta.method}`);
+  startParts.push(shellSingleQuote(urlDisp));
+  const firstLine = `${startParts.join(" ")} \\`;
+
+  /** @type {string[]} */
+  const out = [firstLine];
+  for (const h of meta.headers) {
+    const row = state.curlRows.find((r) => r.kind === "header" && r.headerKey === h.key);
+    const valDisp = row ? displayCurlField(row, h.value, fmt, prefix) : h.value;
+    out.push(`  --header ${shellSingleQuote(`${h.key}: ${valDisp}`)} \\`);
+  }
+  out.push(`  --data-raw ${shellSingleQuote(bodyStr)}`);
+  return out.join("\n");
+}
+
+function syncCurlMetaUi() {
+  const hasCurl =
+    state.curlMeta != null && !!(state.curlMeta.url || state.curlMeta.headers.length);
+  if (el.curlMetaBlock) el.curlMetaBlock.hidden = !hasCurl;
+  if (el.curlVarsSection) el.curlVarsSection.hidden = state.curlRows.length === 0;
+}
+
+function renderCurlTable() {
+  const tb = el.curlVarTbody;
+  if (!tb) return;
+  tb.innerHTML = "";
+  if (!state.curlRows.length) {
+    const tr = document.createElement("tr");
+    tr.className = "placeholder-row";
+    tr.innerHTML = `<td colspan="4">cURL parse sonrası satırlar.</td>`;
+    tb.appendChild(tr);
+    if (el.curlVarCount) el.curlVarCount.textContent = "0";
+    syncCurlMetaUi();
+    return;
+  }
+  if (el.curlVarCount) el.curlVarCount.textContent = String(state.curlRows.length);
+
+  state.curlRows.forEach((row, idx) => {
+    const tr = document.createElement("tr");
+    const tdOn = document.createElement("td");
+    tdOn.className = "col-on";
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = row.enabled;
+    cb.addEventListener("change", () => {
+      state.curlRows[idx].enabled = cb.checked;
+      refreshOutputs();
+    });
+    tdOn.appendChild(cb);
+
+    const tdAlan = document.createElement("td");
+    tdAlan.textContent = row.kind === "url" ? "URL" : `header: ${row.headerKey}`;
+
+    const tdVal = document.createElement("td");
+    tdVal.className = "value-cell";
+    tdVal.title = row.value;
+    tdVal.textContent = row.value;
+
+    const tdVar = document.createElement("td");
+    const inp = document.createElement("input");
+    inp.type = "text";
+    inp.value = row.variableName;
+    inp.addEventListener("input", () => {
+      state.curlRows[idx].variableName = inp.value.trim() || row.variableName;
+      refreshOutputs();
+    });
+    tdVar.appendChild(inp);
+
+    tr.append(tdOn, tdAlan, tdVal, tdVar);
+    tb.appendChild(tr);
+  });
+  syncCurlMetaUi();
 }
 
 function renderTable() {
@@ -122,6 +272,7 @@ function renderTable() {
     tr.append(tdOn, tdPath, tdVal, tdVar);
     el.varTbody.appendChild(tr);
   });
+  renderCurlTable();
 }
 
 function postMergeRows() {
@@ -138,7 +289,7 @@ function postMergeRows() {
  */
 function xrayRowsForDisplay(rows, prefix) {
   const seen = new Set();
-  /** @type {{ name: string, value: string }[]} */
+  /** @type {{ name: string, value: string, alan: string }[]} */
   const out = [];
   for (const r of rows) {
     if (!r.enabled) continue;
@@ -146,23 +297,61 @@ function xrayRowsForDisplay(rows, prefix) {
     const key = `${nm}\0${r.value}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    out.push({ name: nm, value: r.value });
+    out.push({ name: nm, value: r.value, alan: r.path });
   }
   return out;
 }
 
 /**
- * @param {{ name: string, value: string }[]} items
- * @param {'handlebars' | 'dollar' | 'brackets'} fmt
+ * @param {CurlMetaRow[]} curlRows
  * @param {string} prefix
  */
-function buildXrayPlainText(items, fmt, prefix) {
-  return items
+function curlRowsForPlaceDisplay(curlRows, prefix) {
+  const seen = new Set();
+  /** @type {{ name: string, value: string, alan: string }[]} */
+  const out = [];
+  for (const r of curlRows) {
+    if (!r.enabled) continue;
+    const nm = applyPrefixToName(r.variableName, prefix);
+    const key = `${nm}\0${r.value}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const alan = r.kind === "url" ? "URL" : `header: ${r.headerKey}`;
+    out.push({ name: nm, value: r.value, alan });
+  }
+  return out;
+}
+
+/**
+ * @param {{ name: string, value: string, alan: string }[]} items
+ * @param {'handlebars' | 'dollar' | 'brackets'} fmt
+ * @param {string} prefix
+ * @param {string} sectionTag
+ */
+function buildPlacePlainTextSection(items, fmt, prefix, sectionTag) {
+  const body = items
     .map((i) => {
       const ph = formatVariablePlaceholder(i.name, fmt, prefix);
       return `${ph}\t${i.value}`;
     })
     .join("\n");
+  if (!body) return "";
+  return sectionTag ? `[${sectionTag}]\n${body}` : body;
+}
+
+/**
+ * @param {{ name: string, value: string, alan: string }[]} curlItems
+ * @param {{ name: string, value: string, alan: string }[]} idItems
+ * @param {'handlebars' | 'dollar' | 'brackets'} fmt
+ * @param {string} prefix
+ */
+function buildPlacePlainTextCombined(curlItems, idItems, fmt, prefix) {
+  const parts = [];
+  const c = buildPlacePlainTextSection(curlItems, fmt, prefix, "cURL — URL & header");
+  if (c) parts.push(c);
+  const j = buildPlacePlainTextSection(idItems, fmt, prefix, "JSON — id");
+  if (j) parts.push(j);
+  return parts.join("\n\n");
 }
 
 /**
@@ -183,30 +372,30 @@ function makeCopyIconButton(text, label) {
 }
 
 /**
- * @param {{ name: string, value: string }[]} items
+ * @param {{ name: string, value: string, alan: string }[]} entries
  * @param {'handlebars' | 'dollar' | 'brackets'} fmt
  * @param {string} prefix
  */
-function renderXrayPanel(items, fmt, prefix) {
-  const wrap = el.xrayOut;
-  if (!wrap) return;
-  wrap.replaceChildren();
-  if (!items.length) {
-    const p = document.createElement("p");
-    p.className = "xray-placeholder";
-    p.textContent = "Açık satır yok veya henüz id bulunamadı.";
-    wrap.appendChild(p);
-    return;
-  }
+function appendPlaceSection(wrap, title, entries, fmt, prefix) {
+  const section = document.createElement("div");
+  section.className = "place-section";
+  const h = document.createElement("h3");
+  h.className = "place-section__title";
+  h.textContent = title;
+  section.appendChild(h);
 
   const table = document.createElement("table");
-  table.className = "xray-table";
+  table.className = "place-table";
   table.innerHTML =
-    "<thead><tr><th>Değişken (Placeholder ile aynı)</th><th>ID</th></tr></thead>";
+    "<thead><tr><th class=\"place-col-alan\">Alan</th><th>Placeholder</th><th>Değer</th></tr></thead>";
   const tbody = document.createElement("tbody");
 
-  for (const item of items) {
+  for (const item of entries) {
     const tr = document.createElement("tr");
+    const tdA = document.createElement("td");
+    tdA.className = "place-col-alan";
+    tdA.textContent = item.alan;
+
     const ph = formatVariablePlaceholder(item.name, fmt, prefix);
     const labelShort =
       fmt === "brackets"
@@ -215,33 +404,54 @@ function renderXrayPanel(items, fmt, prefix) {
           ? "${" + item.name + "}"
           : `{{${item.name}}}`;
 
-    const tdVar = document.createElement("td");
+    const tdPh = document.createElement("td");
     const line = document.createElement("div");
     line.className = "xray-line";
     const code = document.createElement("code");
     code.textContent = ph;
-    line.append(
-      code,
-      makeCopyIconButton(ph, `${labelShort} kopyala`)
-    );
-    tdVar.append(line);
+    line.append(code, makeCopyIconButton(ph, `${labelShort} kopyala`));
+    tdPh.appendChild(line);
 
-    const tdId = document.createElement("td");
-    tdId.className = "xray-id-cell";
+    const tdVal = document.createElement("td");
+    tdVal.className = "xray-id-cell";
     const span = document.createElement("span");
     span.className = "xray-id-val";
     span.textContent = item.value;
-    tdId.append(
-      span,
-      makeCopyIconButton(item.value, `ID (${item.name}) kopyala`)
-    );
+    tdVal.append(span, makeCopyIconButton(item.value, `${item.alan} — değer kopyala`));
 
-    tr.append(tdVar, tdId);
+    tr.append(tdA, tdPh, tdVal);
     tbody.appendChild(tr);
   }
 
   table.appendChild(tbody);
-  wrap.appendChild(table);
+  section.appendChild(table);
+  wrap.appendChild(section);
+}
+
+/**
+ * @param {{ name: string, value: string, alan: string }[]} curlItems
+ * @param {{ name: string, value: string, alan: string }[]} idItems
+ * @param {'handlebars' | 'dollar' | 'brackets'} fmt
+ * @param {string} prefix
+ */
+function renderXrayPanel(curlItems, idItems, fmt, prefix) {
+  const wrap = el.xrayOut;
+  if (!wrap) return;
+  wrap.replaceChildren();
+  if (!curlItems.length && !idItems.length) {
+    const p = document.createElement("p");
+    p.className = "xray-placeholder";
+    p.textContent =
+      "Açık satır yok. cURL satırları veya JSON id alanlarını etkinleştirin.";
+    wrap.appendChild(p);
+    return;
+  }
+  if (curlItems.length) {
+    appendPlaceSection(wrap, "cURL — URL & header", curlItems, fmt, prefix);
+  }
+  if (idItems.length) {
+    appendPlaceSection(wrap, "JSON — id", idItems, fmt, prefix);
+  }
 }
 
 function refreshOutputs() {
@@ -255,7 +465,13 @@ function refreshOutputs() {
   const prefix = getPrefix();
 
   const transformed = replaceIdsWithVariables(state.parsedJson, rows, fmt, prefix);
-  const env = buildEnvObject(rows, prefix);
+
+  /** @type {Record<string, string>} */
+  let env = {};
+  if (state.curlRows.length) {
+    env = { ...buildEnvObject(state.curlRows, prefix) };
+  }
+  env = { ...env, ...buildEnvObject(rows, prefix) };
 
   const jsonStr = JSON.stringify(transformed, null, 2);
   const envStr = JSON.stringify(env, null, 2);
@@ -277,8 +493,18 @@ function refreshOutputs() {
   el.outDotenv.textContent = dotenv || "# env boş";
   el.outCsv.textContent = csv;
 
-  const xrayItems = xrayRowsForDisplay(rows, prefix);
-  renderXrayPanel(xrayItems, fmt, prefix);
+  const curlPlaceItems = curlRowsForPlaceDisplay(state.curlRows, prefix);
+  const idPlaceItems = xrayRowsForDisplay(rows, prefix);
+  renderXrayPanel(curlPlaceItems, idPlaceItems, fmt, prefix);
+
+  if (el.outCurl) {
+    if (!state.curlMeta) {
+      el.outCurl.textContent =
+        "Bu sekme yalnızca cURL girdisi parse edildiğinde doldurulur (Input: cURL veya otomatik).";
+    } else {
+      el.outCurl.textContent = buildCurlCommand();
+    }
+  }
 
   el.btnRefresh.disabled = false;
 }
@@ -290,6 +516,7 @@ function escapeCsv(v) {
 
 function clearOutputs(msg = "") {
   el.outJson.textContent = msg;
+  if (el.outCurl) el.outCurl.textContent = msg;
   el.outEnv.textContent = msg;
   el.outScript.textContent = msg;
   el.outDotenv.textContent = msg;
@@ -308,20 +535,34 @@ function runParse() {
   const type = getInputType();
 
   try {
-    const json = parseInput(text, type === "auto" ? "auto" : type);
+    const resolved = type === "auto" ? detectInputType(text) : type;
+    let json;
+    if (resolved === "curl") {
+      state.curlMeta = parseCurlMetadata(text);
+      state.curlRows = buildCurlMetaRows(state.curlMeta);
+      json = parseInput(text, "curl");
+    } else {
+      state.curlMeta = null;
+      state.curlRows = [];
+      json = parseInput(text, type === "auto" ? "auto" : type);
+    }
     state.parsedJson = json;
     const found = findIdFields(json);
     state.rows = buildDetectedFields(found);
-    setStatus(`${found.length} id alanı bulundu.`, "ok");
+    const curlHint = state.curlMeta ? ` · ${state.curlMeta.headers.length} header` : "";
+    setStatus(`${found.length} id alanı bulundu${curlHint}.`, "ok");
     renderTable();
     refreshOutputs();
   } catch (e) {
     state.parsedJson = null;
     state.rows = [];
+    state.curlMeta = null;
+    state.curlRows = [];
     const m = e instanceof Error ? e.message : String(e);
     setStatus(m, "err");
     renderTable();
     clearOutputs("");
+    syncCurlMetaUi();
     el.btnRefresh.disabled = true;
   }
 }
@@ -351,9 +592,12 @@ function currentOutText() {
       return el.outDotenv.textContent || "";
     case "csv":
       return el.outCsv.textContent || "";
+    case "curl":
+      return el.outCurl?.textContent || "";
     case "xray":
       if (!state.parsedJson) return "";
-      return buildXrayPlainText(
+      return buildPlacePlainTextCombined(
+        curlRowsForPlaceDisplay(state.curlRows, getPrefix()),
         xrayRowsForDisplay(postMergeRows(), getPrefix()),
         getPlaceholderFormat(),
         getPrefix()
@@ -365,6 +609,8 @@ function currentOutText() {
 
 function downloadName() {
   switch (activeTab) {
+    case "curl":
+      return "request.curl.sh";
     case "env":
       return "env.json";
     case "script":
@@ -389,6 +635,10 @@ el.btnRefresh.addEventListener("click", () => {
 el.placeholderFmt.addEventListener("change", refreshOutputs);
 el.varPrefix.addEventListener("input", refreshOutputs);
 el.chkMerge.addEventListener("change", () => {
+  refreshOutputs();
+});
+
+el.chkCurlMeta?.addEventListener("change", () => {
   refreshOutputs();
 });
 
@@ -447,4 +697,7 @@ function initThemeSwitch() {
 
 initThemeSwitch();
 
+initWorkspaceLayout();
+
+syncCurlMetaUi();
 clearOutputs("");
