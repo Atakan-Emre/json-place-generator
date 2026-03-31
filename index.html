@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="tr" data-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark light" />
+    <title>JSON Place Generator</title>
+    <script>
+      (function () {
+        try {
+          var t = localStorage.getItem("jpg-theme");
+          document.documentElement.setAttribute("data-theme", t === "light" ? "light" : "dark");
+        } catch (e) {}
+      })();
+    </script>
+    <link rel="stylesheet" href="css/style.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="header">
+        <div class="header-top">
+          <div class="header-brand">
+            <h1>JSON Place Generator</h1>
+            <p class="tagline">
+              cURL veya JSON yapıştır; <code>id</code> alanlarını placeholder + env üretimine dönüştür. Tamamen
+              tarayıcıda — veri sunucuya gitmez.
+            </p>
+          </div>
+          <button type="button" class="btn-theme" id="btn-theme" aria-pressed="true">
+            <span class="btn-theme__icon" aria-hidden="true"></span>
+            <span class="btn-theme__label">Tema</span>
+          </button>
+        </div>
+      </header>
+
+      <main class="main-grid">
+        <section class="panel panel--input" aria-labelledby="in-title">
+          <h2 id="in-title">Girdi</h2>
+          <div class="field">
+            <label for="input-type">Input tipi</label>
+            <select id="input-type">
+              <option value="auto">Otomatik algıla</option>
+              <option value="curl">cURL</option>
+              <option value="json">JSON</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="raw-input">cURL veya JSON</label>
+            <textarea id="raw-input" rows="14" spellcheck="false" placeholder="cURL ( --data-raw veya JSON ) buraya yapıştırın."></textarea>
+          </div>
+          <div class="row-actions">
+            <button type="button" class="btn btn--primary" id="btn-parse">Parse</button>
+            <span id="parse-status" class="status" aria-live="polite"></span>
+          </div>
+          <div class="field field--inline">
+            <label for="placeholder-fmt">Placeholder</label>
+            <select id="placeholder-fmt">
+              <option value="handlebars">{{var}}</option>
+              <option value="brackets">[[var]]</option>
+              <option value="dollar">${var}</option>
+            </select>
+            <label for="var-prefix" class="ml">Önek</label>
+            <input type="text" id="var-prefix" placeholder="örn. purchaseHeader" class="input-sm" />
+          </div>
+          <div class="field">
+            <label class="checkbox">
+              <input type="checkbox" id="chk-merge-values" />
+              Aynı değeri tek değişkende birleştir
+            </label>
+          </div>
+        </section>
+
+        <section class="panel panel--vars" aria-labelledby="var-title">
+          <div class="panel-head">
+            <h2 id="var-title">Tespit edilen <code>id</code> alanları</h2>
+            <span id="var-count" class="badge">0</span>
+          </div>
+          <div class="table-wrap">
+            <table class="var-table" id="var-table">
+              <thead>
+                <tr>
+                  <th class="col-on">Açık</th>
+                  <th>Path</th>
+                  <th>Değer</th>
+                  <th>Değişken</th>
+                </tr>
+              </thead>
+              <tbody id="var-tbody">
+                <tr class="placeholder-row">
+                  <td colspan="4">Parse sonrası satırlar burada listelenir.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="row-actions row-actions--wrap">
+            <button type="button" class="btn" id="btn-refresh" disabled>Yeniden üret</button>
+          </div>
+        </section>
+
+        <section class="panel panel--out" aria-labelledby="out-title">
+          <h2 id="out-title">Çıktı</h2>
+          <div class="tabs" role="tablist">
+            <button type="button" class="tab active" role="tab" aria-selected="true" data-tab="json">Değişkenli JSON</button>
+            <button type="button" class="tab" role="tab" aria-selected="false" data-tab="env">Env JSON</button>
+            <button type="button" class="tab" role="tab" aria-selected="false" data-tab="script">Postman / Apidog</button>
+            <button type="button" class="tab" role="tab" aria-selected="false" data-tab="dotenv">.env satırları</button>
+            <button type="button" class="tab" role="tab" aria-selected="false" data-tab="csv">CSV</button>
+            <button type="button" class="tab" role="tab" aria-selected="false" data-tab="xray">Place</button>
+          </div>
+          <div class="tab-panels">
+            <div class="tab-panel active" id="panel-json" role="tabpanel">
+              <pre class="code-out" id="out-json"></pre>
+            </div>
+            <div class="tab-panel" id="panel-env" role="tabpanel" hidden>
+              <pre class="code-out" id="out-env"></pre>
+            </div>
+            <div class="tab-panel" id="panel-script" role="tabpanel" hidden>
+              <pre class="code-out" id="out-script"></pre>
+            </div>
+            <div class="tab-panel" id="panel-dotenv" role="tabpanel" hidden>
+              <pre class="code-out" id="out-dotenv"></pre>
+            </div>
+            <div class="tab-panel" id="panel-csv" role="tabpanel" hidden>
+              <pre class="code-out" id="out-csv"></pre>
+            </div>
+            <div class="tab-panel" id="panel-xray" role="tabpanel" hidden>
+              <div class="xray-wrap" id="xray-out"></div>
+            </div>
+          </div>
+          <div class="row-actions out-actions">
+            <button type="button" class="btn" id="btn-copy-out">Panoya kopyala</button>
+            <button type="button" class="btn" id="btn-dl-out">İndir</button>
+          </div>
+        </section>
+      </main>
+
+      <footer class="footer">
+        <p>
+          <strong>JSON Place Generator</strong> — GitHub Pages statik yayın;
+          <code>json-place-generator</code> kökünde <code>index.html</code>.
+        </p>
+      </footer>
+    </div>
+    <script type="module" src="js/app.js"></script>
+  </body>
+</html>
