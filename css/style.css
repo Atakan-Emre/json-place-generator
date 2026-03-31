@@ -467,6 +467,14 @@ select {
   min-width: 120px;
 }
 
+#placeholder-fmt {
+  min-width: 12.5rem;
+  padding-left: 0.65rem;
+  padding-right: 2rem;
+  font-family: var(--mono);
+  font-size: 0.85rem;
+}
+
 textarea {
   resize: vertical;
   min-height: 180px;
@@ -474,6 +482,11 @@ textarea {
   font-family: var(--mono);
   font-size: 0.8rem;
   line-height: 1.45;
+}
+
+.textarea-compact {
+  min-height: 5.5rem;
+  font-size: 0.8rem;
 }
 
 .input-sm {

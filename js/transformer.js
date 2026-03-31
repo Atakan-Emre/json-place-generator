@@ -1,11 +1,114 @@
 import { segmentsToCamelVariable } from "./utils.js";
 
+/** @typedef {{ useDefaultPatterns: boolean, extraLeafKeys: Set<string> }} IdDetectOptions */
+
+/**
+ * @param {IdDetectOptions | undefined} options
+ * @returns {IdDetectOptions}
+ */
+function resolveIdOptions(options) {
+  if (!options) {
+    return { useDefaultPatterns: true, extraLeafKeys: new Set() };
+  }
+  const extra =
+    options.extraLeafKeys instanceof Set
+      ? options.extraLeafKeys
+      : new Set(Array.isArray(options.extraLeafKeys) ? options.extraLeafKeys : []);
+  return {
+    useDefaultPatterns: options.useDefaultPatterns !== false,
+    extraLeafKeys: extra,
+  };
+}
+
+/**
+ * @param {unknown} raw
+ * @returns {IdDetectOptions}
+ */
+export function idDetectOptionsFromStorage(raw) {
+  if (!raw || typeof raw !== "object") {
+    return { useDefaultPatterns: true, extraLeafKeys: new Set() };
+  }
+  const o = /** @type {{ useDefaultPatterns?: boolean, extraLeafKeys?: unknown }} */ (raw);
+  const keys = Array.isArray(o.extraLeafKeys)
+    ? o.extraLeafKeys.map((x) => String(x).trim()).filter(Boolean)
+    : [];
+  return {
+    useDefaultPatterns: o.useDefaultPatterns !== false,
+    extraLeafKeys: new Set(keys),
+  };
+}
+
+/**
+ * @param {IdDetectOptions} opts
+ */
+export function idDetectOptionsToStorage(opts) {
+  const r = resolveIdOptions(opts);
+  return {
+    useDefaultPatterns: r.useDefaultPatterns,
+    extraLeafKeys: [...r.extraLeafKeys],
+  };
+}
+
+/**
+ * @param {unknown} val
+ */
+function isIdScalarValue(val) {
+  if (typeof val === "string" && val.length > 0) return true;
+  if (typeof val === "number" && Number.isFinite(val)) return true;
+  return false;
+}
+
+/**
+ * @param {unknown} val
+ */
+function scalarToIdString(val) {
+  if (typeof val === "string") return val;
+  if (typeof val === "number" && Number.isFinite(val)) return String(val);
+  return "";
+}
+
+/**
+ * Varsayılan kalıplar: id, …Id, …_id — paid gibi yanlış pozitif yok.
+ * @param {string} key
+ */
+export function matchesDefaultIdPattern(key) {
+  if (key === "id") return true;
+  if (key.length >= 3 && /[a-z0-9]Id$/.test(key)) return true;
+  if (key.length > 3 && /_id$/i.test(key)) return true;
+  return false;
+}
+
+/**
+ * @param {string} key
+ * @param {IdDetectOptions} opts
+ */
+export function isIdLeafKey(key, opts) {
+  const o = resolveIdOptions(opts);
+  if (o.extraLeafKeys.has(key)) return true;
+  if (o.useDefaultPatterns && matchesDefaultIdPattern(key)) return true;
+  return false;
+}
+
+/**
+ * @param {string} seg
+ */
+function normalizeIdPathSegment(seg) {
+  if (/_id$/i.test(seg) && seg.length > 3) {
+    const stem = seg.slice(0, -3);
+    if (!stem) return "id";
+    return stem.charAt(0).toLowerCase() + stem.slice(1) + "Id";
+  }
+  return seg;
+}
+
 /**
  * @param {unknown} obj
  * @param {string[]} pathSeg
+ * @param {IdDetectOptions} [options]
  * @returns {{ path: string, value: string }[]}
  */
-export function findIdFields(obj, pathSeg = []) {
+export function findIdFields(obj, pathSeg = [], options) {
+  const opts = resolveIdOptions(options);
   /** @type {{ path: string, value: string }[]} */
   const out = [];
 
@@ -13,7 +116,7 @@ export function findIdFields(obj, pathSeg = []) {
 
   if (Array.isArray(obj)) {
     obj.forEach((item, i) => {
-      out.push(...findIdFields(item, [...pathSeg, String(i)]));
+      out.push(...findIdFields(item, [...pathSeg, String(i)], opts));
     });
     return out;
   }
@@ -23,13 +126,13 @@ export function findIdFields(obj, pathSeg = []) {
       const val = obj[key];
       const nextPath = [...pathSeg, key];
 
-      if (key === "id" && typeof val === "string" && val.length > 0) {
+      if (isIdLeafKey(key, opts) && isIdScalarValue(val)) {
         out.push({
           path: nextPath.join("."),
-          value: val,
+          value: scalarToIdString(val),
         });
       } else {
-        out.push(...findIdFields(val, nextPath));
+        out.push(...findIdFields(val, nextPath, opts));
       }
     }
   }
@@ -39,19 +142,29 @@ export function findIdFields(obj, pathSeg = []) {
 
 /**
  * path: "branchDocumentSeries.id" → branchDocumentSeriesId
+ * "branchId" (yaprak anahtar) → branchId (çift Id üretmez)
  * @param {string} fullPath
+ * @param {IdDetectOptions} [options]
  */
-export function generateVariableName(fullPath) {
+export function generateVariableName(fullPath, options) {
+  const opts = resolveIdOptions(options);
   const segs = fullPath.split(".");
-  if (segs.length < 2 || segs[segs.length - 1] !== "id") {
-    const base = segmentsToCamelVariable(segs);
+  const last = segs[segs.length - 1] ?? "";
+
+  if (segs.length >= 2 && last === "id") {
+    const parentSegs = segs.slice(0, -1);
+    if (parentSegs.length === 0) return "rootId";
+    const base = segmentsToCamelVariable(parentSegs);
     return base ? `${base}Id` : "rootId";
   }
-  const parentSegs = segs.slice(0, -1);
-  if (parentSegs.length === 0) {
-    return "rootId";
+
+  if (isIdLeafKey(last, opts)) {
+    const norm = segs.map(normalizeIdPathSegment);
+    const name = segmentsToCamelVariable(norm);
+    return name || "rootId";
   }
-  const base = segmentsToCamelVariable(parentSegs);
+
+  const base = segmentsToCamelVariable(segs);
   return base ? `${base}Id` : "rootId";
 }
 
@@ -79,9 +192,11 @@ export function assignUniqueNames(baseNames) {
 
 /**
  * @param {{ path: string, value: string }[]} found
+ * @param {IdDetectOptions} [options]
  */
-export function buildDetectedFields(found) {
-  const suggested = found.map((f) => generateVariableName(f.path));
+export function buildDetectedFields(found, options) {
+  const opts = resolveIdOptions(options);
+  const suggested = found.map((f) => generateVariableName(f.path, opts));
   const unique = assignUniqueNames(suggested);
   return found.map((f, i) => ({
     path: f.path,

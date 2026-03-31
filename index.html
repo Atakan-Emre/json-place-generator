@@ -89,14 +89,36 @@
               <option value="brackets">[[var]]</option>
               <option value="dollar">${var}</option>
             </select>
-            <label for="var-prefix" class="ml">Önek</label>
-            <input type="text" id="var-prefix" placeholder="örn. purchaseHeader" class="input-sm" />
+            <label for="var-prefix" class="ml">Değişken adı ön eki</label>
+            <input
+              type="text"
+              id="var-prefix"
+              placeholder="örn. purchaseHeader"
+              class="input-sm"
+              title="Placeholder ve ortam değişkeni adlarına eklenir; ör. purchaseHeader → purchaseHeaderBranchId"
+            />
           </div>
           <div class="field">
             <label class="checkbox">
               <input type="checkbox" id="chk-merge-values" />
               Aynı değeri tek değişkende birleştir
             </label>
+          </div>
+          <div class="field">
+            <label class="checkbox">
+              <input type="checkbox" id="chk-id-defaults" checked />
+              Varsayılan id kalıpları (<code>id</code>, <code>…Id</code>, <code>…_id</code>)
+            </label>
+          </div>
+          <div class="field">
+            <label for="id-extra-keys">Ek id alan adları (JSON’daki özellik adı; her satıra bir tane)</label>
+            <textarea
+              id="id-extra-keys"
+              class="textarea-compact"
+              rows="4"
+              spellcheck="false"
+              placeholder="örn. unitPriceCosting&#10;orderLineKey"
+            ></textarea>
           </div>
           <div class="field curl-meta-field" id="curl-meta-block" hidden>
             <label class="checkbox">

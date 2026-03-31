@@ -96,6 +96,262 @@ function extractQuotedString(s, quote) {
   return out.trim();
 }
 
+/**
+ * JavaScript tarzı çizgi (//) ve blok yorumlar string dışında kabul edilmez.
+ * @param {string} text
+ */
+function assertNoJsCommentsOutsideStrings(text) {
+  let i = 0;
+  let inSQ = false;
+  let inDQ = false;
+  while (i < text.length) {
+    const c = text[i];
+    if (inSQ) {
+      if (c === "\\" && i + 1 < text.length) {
+        i += 2;
+        continue;
+      }
+      if (c === "'") inSQ = false;
+      i++;
+      continue;
+    }
+    if (inDQ) {
+      if (c === "\\" && i + 1 < text.length) {
+        i += 2;
+        continue;
+      }
+      if (c === '"') inDQ = false;
+      i++;
+      continue;
+    }
+    if (c === "'") {
+      inSQ = true;
+      i++;
+      continue;
+    }
+    if (c === '"') {
+      inDQ = true;
+      i++;
+      continue;
+    }
+    if (c === "/" && text[i + 1] === "/") {
+      throw new Error("Yorum satırları (//) desteklenmiyor.");
+    }
+    if (c === "/" && text[i + 1] === "*") {
+      throw new Error("Blok yorumlar desteklenmiyor.");
+    }
+    i++;
+  }
+}
+
+/**
+ * Tek tırnak, tırnaksız anahtar, sondaki fazla virgül. Önce assertNoJsCommentsOutsideStrings.
+ * Çıktı JSON.parse ile uyumludur.
+ * @param {string} source
+ */
+function looseJsonToStrictJsonString(source) {
+  assertNoJsCommentsOutsideStrings(source);
+  let i = 0;
+  const src = source;
+  const len = src.length;
+
+  function skipWs() {
+    while (i < len && /[\s\uFEFF]/.test(src[i])) i++;
+  }
+
+  function atWordEnd(idx) {
+    if (idx >= len) return true;
+    return !/[a-zA-Z0-9_$]/.test(src[idx]);
+  }
+
+  function parseStr(openQuote) {
+    if (src[i] !== openQuote) throw new Error("Gevşek JSON: string bekleniyor");
+    i++;
+    let out = "";
+    while (i < len) {
+      const ch = src[i];
+      if (ch === "\\") {
+        i++;
+        if (i >= len) throw new Error("Gevşek JSON: eksik kaçış dizisi");
+        const e = src[i];
+        if (openQuote === "'" && e === "'") {
+          out += "'";
+          i++;
+          continue;
+        }
+        if (e === "n") {
+          out += "\n";
+          i++;
+          continue;
+        }
+        if (e === "r") {
+          out += "\r";
+          i++;
+          continue;
+        }
+        if (e === "t") {
+          out += "\t";
+          i++;
+          continue;
+        }
+        if (e === "\\") {
+          out += "\\";
+          i++;
+          continue;
+        }
+        if (e === '"' && openQuote === '"') {
+          out += '"';
+          i++;
+          continue;
+        }
+        if (e === '"' && openQuote === "'") {
+          out += '"';
+          i++;
+          continue;
+        }
+        if (e === "u" && i + 4 < len) {
+          const hex = src.slice(i + 1, i + 5);
+          if (/^[0-9a-fA-F]{4}$/.test(hex)) {
+            out += String.fromCharCode(parseInt(hex, 16));
+            i += 5;
+            continue;
+          }
+        }
+        out += e;
+        i++;
+        continue;
+      }
+      if (ch === openQuote) {
+        i++;
+        return out;
+      }
+      out += ch;
+      i++;
+    }
+    throw new Error("Gevşek JSON: kapanmamış string");
+  }
+
+  function parseNum() {
+    const start = i;
+    if (src[i] === "-") i++;
+    if (i < len && src[i] === "0" && i + 1 < len && src[i + 1] >= "0" && src[i + 1] <= "9") {
+      throw new Error("Gevşek JSON: geçersiz sayı");
+    }
+    while (i < len && src[i] >= "0" && src[i] <= "9") i++;
+    if (i < len && src[i] === ".") {
+      i++;
+      while (i < len && src[i] >= "0" && src[i] <= "9") i++;
+    }
+    if (i < len && (src[i] === "e" || src[i] === "E")) {
+      i++;
+      if (i < len && (src[i] === "+" || src[i] === "-")) i++;
+      if (i >= len || src[i] < "0" || src[i] > "9") throw new Error("Gevşek JSON: geçersiz üs");
+      while (i < len && src[i] >= "0" && src[i] <= "9") i++;
+    }
+    const raw = src.slice(start, i);
+    if (raw === "-" || raw === "" || raw === "-.") throw new Error("Gevşek JSON: geçersiz sayı");
+    return raw;
+  }
+
+  function parseKey() {
+    skipWs();
+    const c = src[i];
+    if (c === '"' || c === "'") return parseStr(c);
+    if (/[a-zA-Z_$]/.test(c)) {
+      const start = i;
+      i++;
+      while (i < len && /[a-zA-Z0-9_$]/.test(src[i])) i++;
+      return src.slice(start, i);
+    }
+    throw new Error("Gevşek JSON: geçersiz anahtar");
+  }
+
+  function parseVal() {
+    skipWs();
+    const c = src[i];
+    if (c === "{") return parseObj();
+    if (c === "[") return parseArr();
+    if (c === "'" || c === '"') return JSON.stringify(parseStr(c));
+    if (c === "-" || (c >= "0" && c <= "9")) return parseNum();
+    if (src.slice(i, i + 4) === "true" && atWordEnd(i + 4)) {
+      i += 4;
+      return "true";
+    }
+    if (src.slice(i, i + 5) === "false" && atWordEnd(i + 5)) {
+      i += 5;
+      return "false";
+    }
+    if (src.slice(i, i + 4) === "null" && atWordEnd(i + 4)) {
+      i += 4;
+      return "null";
+    }
+    throw new Error("Gevşek JSON: beklenmeyen değer");
+  }
+
+  function parseObj() {
+    if (src[i] !== "{") throw new Error("Gevşek JSON: '{' bekleniyor");
+    i++;
+    skipWs();
+    if (src[i] === "}") {
+      i++;
+      return "{}";
+    }
+    const parts = [];
+    while (true) {
+      const key = parseKey();
+      skipWs();
+      if (src[i] !== ":") throw new Error("Gevşek JSON: ':' bekleniyor");
+      i++;
+      parts.push(`${JSON.stringify(key)}:${parseVal()}`);
+      skipWs();
+      if (src[i] === "}") {
+        i++;
+        return `{${parts.join(",")}}`;
+      }
+      if (src[i] !== ",") throw new Error("Gevşek JSON: ',' veya '}' bekleniyor");
+      i++;
+      skipWs();
+      if (src[i] === "}") {
+        i++;
+        return `{${parts.join(",")}}`;
+      }
+    }
+  }
+
+  function parseArr() {
+    if (src[i] !== "[") throw new Error("Gevşek JSON: '[' bekleniyor");
+    i++;
+    skipWs();
+    if (src[i] === "]") {
+      i++;
+      return "[]";
+    }
+    const parts = [];
+    while (true) {
+      parts.push(parseVal());
+      skipWs();
+      if (src[i] === "]") {
+        i++;
+        return `[${parts.join(",")}]`;
+      }
+      if (src[i] !== ",") throw new Error("Gevşek JSON: ',' veya ']' bekleniyor");
+      i++;
+      skipWs();
+      if (src[i] === "]") {
+        i++;
+        return `[${parts.join(",")}]`;
+      }
+    }
+  }
+
+  skipWs();
+  if (i >= len) throw new Error("Gevşek JSON: boş girdi");
+  const out = parseVal();
+  skipWs();
+  if (i !== len) throw new Error("Gevşek JSON: kökten sonra fazla karakter");
+  return out;
+}
+
 /** @param {string} s */
 function extractBalancedJson(s) {
   const open = s[0];
@@ -249,9 +505,15 @@ export function parseInput(text, forcedType = "auto") {
 
   try {
     return JSON.parse(jsonStr);
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    throw new Error(`JSON parse hatası: ${msg}`);
+  } catch (e1) {
+    try {
+      const strict = looseJsonToStrictJsonString(jsonStr.trim());
+      return JSON.parse(strict);
+    } catch (e2) {
+      const msg = e1 instanceof Error ? e1.message : String(e1);
+      const extra = e2 instanceof Error ? e2.message : String(e2);
+      throw new Error(`JSON parse hatası: ${msg}${extra && extra !== msg ? ` (${extra})` : ""}`);
+    }
   }
 }
 

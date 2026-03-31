@@ -8,6 +8,8 @@ import {
   applyPrefixToName,
   formatVariablePlaceholder,
   assignUniqueNames,
+  idDetectOptionsFromStorage,
+  idDetectOptionsToStorage,
 } from "./transformer.js";
 import { copyText, downloadFile, httpHeaderKeyToVarName, suggestUrlEnvName } from "./utils.js";
 import { initWorkspaceLayout } from "./layout.js";
@@ -25,6 +27,8 @@ const el = {
   placeholderFmt: /** @type {HTMLSelectElement} */ (document.getElementById("placeholder-fmt")),
   varPrefix: /** @type {HTMLInputElement} */ (document.getElementById("var-prefix")),
   chkMerge: /** @type {HTMLInputElement} */ (document.getElementById("chk-merge-values")),
+  chkIdDefaults: /** @type {HTMLInputElement | null} */ (document.getElementById("chk-id-defaults")),
+  idExtraKeys: /** @type {HTMLTextAreaElement | null} */ (document.getElementById("id-extra-keys")),
   chkCurlMeta: /** @type {HTMLInputElement | null} */ (document.getElementById("chk-curl-meta")),
   curlMetaBlock: document.getElementById("curl-meta-block"),
   curlVarsSection: document.getElementById("curl-vars-section"),
@@ -48,6 +52,7 @@ const el = {
 const CLIPBOARD_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>`;
 
 const THEME_STORAGE_KEY = "jpg-theme";
+const ID_DETECT_STORAGE_KEY = "jpg-id-detect";
 
 const ICON_SUN = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.93 4.93l1.41 1.41m11.32 11.32l1.41 1.41M2 12h2m16 0h2M4.93 19.07l1.41-1.41m11.32-11.32l1.41-1.41"/></svg>`;
 
@@ -83,6 +88,53 @@ function getPlaceholderFormat() {
 
 function getPrefix() {
   return el.varPrefix.value.trim();
+}
+
+/** @returns {import("./transformer.js").IdDetectOptions} */
+function getIdDetectOptions() {
+  const useDefaultPatterns = el.chkIdDefaults?.checked !== false;
+  const lines = el.idExtraKeys?.value.split(/\r?\n/).map((s) => s.trim()).filter(Boolean) ?? [];
+  return {
+    useDefaultPatterns,
+    extraLeafKeys: new Set(lines),
+  };
+}
+
+function saveIdDetectSettings() {
+  try {
+    localStorage.setItem(ID_DETECT_STORAGE_KEY, JSON.stringify(idDetectOptionsToStorage(getIdDetectOptions())));
+  } catch {
+    /* ignore */
+  }
+}
+
+function loadIdDetectSettings() {
+  try {
+    const raw = localStorage.getItem(ID_DETECT_STORAGE_KEY);
+    if (!raw || !el.chkIdDefaults || !el.idExtraKeys) return;
+    const o = idDetectOptionsFromStorage(JSON.parse(raw));
+    el.chkIdDefaults.checked = o.useDefaultPatterns;
+    el.idExtraKeys.value = [...o.extraLeafKeys].join("\n");
+  } catch {
+    /* ignore */
+  }
+}
+
+function statusForIdCount(n, curlHint) {
+  if (n === 0) return `id alanı tespit edilmedi${curlHint}.`;
+  if (n === 1) return `1 id alanı tespit edildi${curlHint}.`;
+  return `${n} id alanı tespit edildi${curlHint}.`;
+}
+
+function reapplyIdDetection() {
+  if (!state.parsedJson) return;
+  const opts = getIdDetectOptions();
+  const found = findIdFields(state.parsedJson, [], opts);
+  state.rows = buildDetectedFields(found, opts);
+  const curlHint = state.curlMeta ? ` · ${state.curlMeta.headers.length} header` : "";
+  setStatus(statusForIdCount(found.length, curlHint), "ok");
+  renderTable();
+  refreshOutputs();
 }
 
 /**
@@ -547,10 +599,11 @@ function runParse() {
       json = parseInput(text, type === "auto" ? "auto" : type);
     }
     state.parsedJson = json;
-    const found = findIdFields(json);
-    state.rows = buildDetectedFields(found);
+    const opts = getIdDetectOptions();
+    const found = findIdFields(json, [], opts);
+    state.rows = buildDetectedFields(found, opts);
     const curlHint = state.curlMeta ? ` · ${state.curlMeta.headers.length} header` : "";
-    setStatus(`${found.length} id alanı bulundu${curlHint}.`, "ok");
+    setStatus(statusForIdCount(found.length, curlHint), "ok");
     renderTable();
     refreshOutputs();
   } catch (e) {
@@ -638,6 +691,16 @@ el.chkMerge.addEventListener("change", () => {
   refreshOutputs();
 });
 
+el.chkIdDefaults?.addEventListener("change", () => {
+  saveIdDetectSettings();
+  reapplyIdDetection();
+});
+
+el.idExtraKeys?.addEventListener("input", () => {
+  saveIdDetectSettings();
+  reapplyIdDetection();
+});
+
 el.chkCurlMeta?.addEventListener("change", () => {
   refreshOutputs();
 });
@@ -696,6 +759,8 @@ function initThemeSwitch() {
 }
 
 initThemeSwitch();
+
+loadIdDetectSettings();
 
 initWorkspaceLayout();
 
